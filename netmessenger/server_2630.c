@@ -7,6 +7,7 @@
  * Storage path        : ./storage/IT23862630/<sender>/<filename>
  *
  * STEP 1: threads, framing, REGISTER / LIST / QUIT, logging, cleanup.
+ * STEP 2: BCAST, PMSG, rooms (JOIN / LEAVE / ROOMS / RMSG), room cleanup.
  */
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -126,6 +127,83 @@ static void broadcast_line(Client *except, const char *fmt, ...)
     pthread_mutex_unlock(&clients_lock);
 }
 
+/* ---------------- rooms ---------------- */
+#define MAX_ROOMS    32
+#define ROOMNAME_LEN 32
+
+typedef struct {
+    int     used;
+    char    name[ROOMNAME_LEN];
+    Client *members[MAX_CLIENTS];
+    int     n;
+} Room;
+
+static Room rooms[MAX_ROOMS];
+static pthread_mutex_t rooms_lock = PTHREAD_MUTEX_INITIALIZER;
+/* rooms_lock and clients_lock are NEVER held at the same time.
+ * Inside rooms_lock we may take a client's wlock (via send_all). */
+
+/* Build "<text>\n" into out; returns length including the newline. */
+static size_t format_line(char *out, size_t size, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(out, size, fmt, ap);
+    va_end(ap);
+    if (n < 0) n = 0;
+    if ((size_t)n > size - 2) n = (int)(size - 2);
+    out[n++] = '\n';
+    out[n] = '\0';
+    return (size_t)n;
+}
+
+/* caller must hold rooms_lock for all helpers below */
+static Room *find_room(const char *name)
+{
+    for (int i = 0; i < MAX_ROOMS; i++)
+        if (rooms[i].used && strcmp(rooms[i].name, name) == 0) return &rooms[i];
+    return NULL;
+}
+
+static int member_index(Room *r, Client *c)
+{
+    for (int i = 0; i < r->n; i++)
+        if (r->members[i] == c) return i;
+    return -1;
+}
+
+static void room_remove_at(Room *r, int idx)
+{
+    r->members[idx] = r->members[--r->n];
+    if (r->n == 0) r->used = 0;              /* empty room disappears */
+}
+
+static void room_send(Room *r, Client *except, const char *line, size_t n)
+{
+    for (int i = 0; i < r->n; i++)
+        if (r->members[i] != except)
+            send_all(r->members[i], line, n);
+}
+
+/* Called when a client disconnects: remove it from every room. */
+static void rooms_remove_client(Client *c)
+{
+    char line[LINE_MAX_LEN];
+    pthread_mutex_lock(&rooms_lock);
+    for (int i = 0; i < MAX_ROOMS; i++) {
+        Room *r = &rooms[i];
+        if (!r->used) continue;
+        int idx = member_index(r, c);
+        if (idx < 0) continue;
+        room_remove_at(r, idx);
+        if (r->used) {
+            size_t n = format_line(line, sizeof line, "MSG ROOMLEAVE %s %s", r->name, c->name);
+            room_send(r, NULL, line, n);
+        }
+    }
+    pthread_mutex_unlock(&rooms_lock);
+}
+
 /* ---------------- framing ---------------- */
 /* returns 1 = got a line, 0 = disconnect, -1 = line too long */
 static int read_line(Client *c, char *out, size_t max)
@@ -196,6 +274,136 @@ static void cmd_list(Client *c)
     reply(c, "OK USERS %s", list);
 }
 
+static void cmd_bcast(Client *c, char *args)
+{
+    if (!args[0]) { reply(c, "ERR 007 BAD_SYNTAX"); return; }
+    broadcast_line(c, "MSG BCAST %s %s", c->name, args);
+    reply(c, "OK SENT");
+    log_event("BCAST from=%s len=%zu", c->name, strlen(args));
+}
+
+static void cmd_pmsg(Client *c, char *args)
+{
+    char *msg = strchr(args, ' ');
+    if (msg) *msg++ = '\0';
+    if (!args[0] || !msg || !msg[0]) { reply(c, "ERR 007 BAD_SYNTAX"); return; }
+
+    char line[LINE_MAX_LEN];
+    size_t n = format_line(line, sizeof line, "MSG PRIV %s %s", c->name, msg);
+
+    int found = 0;
+    pthread_mutex_lock(&clients_lock);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i] && clients[i]->registered && strcmp(clients[i]->name, args) == 0) {
+            send_all(clients[i], line, n);
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_lock);
+
+    if (!found) { reply(c, "ERR 002 USER_NOT_FOUND"); return; }
+    reply(c, "OK SENT");
+    log_event("PMSG from=%s to=%s len=%zu", c->name, args, strlen(msg));
+}
+
+static void cmd_join(Client *c, char *args)
+{
+    if (!args[0] || strchr(args, ' ') || strlen(args) >= ROOMNAME_LEN) {
+        reply(c, "ERR 007 BAD_SYNTAX");
+        return;
+    }
+    char line[LINE_MAX_LEN];
+    int full = 0, created = 0;
+
+    pthread_mutex_lock(&rooms_lock);
+    Room *r = find_room(args);
+    if (!r) {                                    /* create it */
+        for (int i = 0; i < MAX_ROOMS; i++)
+            if (!rooms[i].used) { r = &rooms[i]; break; }
+        if (!r) full = 1;
+        else {
+            r->used = 1; r->n = 0; created = 1;
+            snprintf(r->name, sizeof r->name, "%s", args);
+        }
+    }
+    if (r && member_index(r, c) < 0) {           /* already a member: no-op */
+        r->members[r->n++] = c;
+        size_t n = format_line(line, sizeof line, "MSG ROOMJOIN %s %s", r->name, c->name);
+        room_send(r, c, line, n);
+    }
+    pthread_mutex_unlock(&rooms_lock);
+
+    if (full) { reply(c, "ERR 012 TOO_MANY_ROOMS"); return; }
+    reply(c, "OK JOINED %s", args);
+    log_event("JOIN user=%s room=%s%s", c->name, args, created ? " (created)" : "");
+}
+
+static void cmd_leave(Client *c, char *args)
+{
+    if (!args[0] || strchr(args, ' ')) { reply(c, "ERR 007 BAD_SYNTAX"); return; }
+    char line[LINE_MAX_LEN];
+    int ok = 0;
+
+    pthread_mutex_lock(&rooms_lock);
+    Room *r = find_room(args);
+    int idx = r ? member_index(r, c) : -1;
+    if (r && idx >= 0) {
+        room_remove_at(r, idx);
+        if (r->used) {
+            size_t n = format_line(line, sizeof line, "MSG ROOMLEAVE %s %s", r->name, c->name);
+            room_send(r, NULL, line, n);
+        }
+        ok = 1;
+    }
+    pthread_mutex_unlock(&rooms_lock);
+
+    if (!ok) { reply(c, "ERR 003 ROOM_NOT_FOUND"); return; }
+    reply(c, "OK LEFT %s", args);
+    log_event("LEAVE user=%s room=%s", c->name, args);
+}
+
+static void cmd_rooms(Client *c)
+{
+    char list[LINE_MAX_LEN] = "";
+    size_t used = 0;
+
+    pthread_mutex_lock(&rooms_lock);
+    for (int i = 0; i < MAX_ROOMS; i++) {
+        if (!rooms[i].used) continue;
+        int w = snprintf(list + used, sizeof list - used, "%s%s",
+                         used ? "," : "", rooms[i].name);
+        if (w < 0 || (size_t)w >= sizeof list - used) break;
+        used += (size_t)w;
+    }
+    pthread_mutex_unlock(&rooms_lock);
+
+    reply(c, "OK ROOMS %s", list);
+}
+
+static void cmd_rmsg(Client *c, char *args)
+{
+    char *msg = strchr(args, ' ');
+    if (msg) *msg++ = '\0';
+    if (!args[0] || !msg || !msg[0]) { reply(c, "ERR 007 BAD_SYNTAX"); return; }
+
+    char line[LINE_MAX_LEN];
+    size_t n = format_line(line, sizeof line, "MSG ROOM %s %s %s", args, c->name, msg);
+    int status = 0;                              /* 0 ok, 1 no room, 2 not member */
+
+    pthread_mutex_lock(&rooms_lock);
+    Room *r = find_room(args);
+    if (!r) status = 1;
+    else if (member_index(r, c) < 0) status = 2;
+    else room_send(r, c, line, n);
+    pthread_mutex_unlock(&rooms_lock);
+
+    if (status == 1) { reply(c, "ERR 003 ROOM_NOT_FOUND"); return; }
+    if (status == 2) { reply(c, "ERR 011 NOT_IN_ROOM"); return; }
+    reply(c, "OK SENT");
+    log_event("RMSG from=%s room=%s len=%zu", c->name, args, strlen(msg));
+}
+
 /* returns 1 if the connection should close */
 static int cmd_quit(Client *c)
 {
@@ -221,7 +429,7 @@ static void cleanup_client(Client *c)
     } else {
         log_event("DISCONNECT (unregistered) ip=%s", c->ip);
     }
-    /* TODO (step 2): remove c from all rooms here */
+    rooms_remove_client(c);
 
     close(c->fd);
     pthread_mutex_destroy(&c->wlock);
@@ -249,10 +457,22 @@ static void *handle_client(void *arg)
             reply(c, "ERR 006 NOT_REGISTERED");
         } else if (strcmp(line, "LIST") == 0) {
             cmd_list(c);
+        } else if (strcmp(line, "BCAST") == 0) {
+            cmd_bcast(c, args);
+        } else if (strcmp(line, "PMSG") == 0) {
+            cmd_pmsg(c, args);
+        } else if (strcmp(line, "JOIN") == 0) {
+            cmd_join(c, args);
+        } else if (strcmp(line, "LEAVE") == 0) {
+            cmd_leave(c, args);
+        } else if (strcmp(line, "ROOMS") == 0) {
+            cmd_rooms(c);
+        } else if (strcmp(line, "RMSG") == 0) {
+            cmd_rmsg(c, args);
         } else if (strcmp(line, "QUIT") == 0) {
             quit = cmd_quit(c);
         }
-        /* step 2: BCAST, PMSG, JOIN, LEAVE, ROOMS, RMSG; step 3: SENDFILE */
+        /* step 3: SENDFILE */
         else {
             reply(c, "ERR 005 UNKNOWN_COMMAND");
         }
