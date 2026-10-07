@@ -1,0 +1,41 @@
+[2026-10-06 21:36:30] SERVER_START port=8630 nid=8626
+[2026-10-06 21:55:28] CONNECT ip=127.0.0.1
+[2026-10-06 21:55:33] REGISTER user=deshan ip=127.0.0.1
+[2026-10-06 21:55:43] CONNECT ip=127.0.0.1
+[2026-10-06 21:55:58] REGISTER user=kasun ip=127.0.0.1
+[2026-10-06 21:56:12] CONNECT ip=127.0.0.1
+[2026-10-06 21:56:25] REGISTER user=nimal ip=127.0.0.1
+[2026-10-06 21:56:46] CONNECT ip=127.0.0.1
+[2026-10-06 21:56:48] REGISTER user=sahan ip=127.0.0.1
+[2026-10-06 21:57:08] CONNECT ip=127.0.0.1
+[2026-10-06 21:57:11] REGISTER user=amal ip=127.0.0.1
+[2026-10-06 22:05:21] CONNECT ip=127.0.0.1
+[2026-10-06 22:06:37] REGISTER user=sunil ip=127.0.0.1
+[2026-10-06 22:07:03] DISCONNECT user=sunil ip=127.0.0.1
+[2026-10-06 22:09:16] BCAST from=deshan len=14
+[2026-10-06 22:11:44] PMSG from=deshan to=kasun len=12
+[2026-10-06 22:14:18] JOIN user=kasun room=lab
+[2026-10-06 22:14:34] JOIN user=deshan room=lab
+[2026-10-06 22:15:08] RMSG from=deshan room=lab len=6
+[2026-10-06 22:15:59] LEAVE user=kasun room=lab
+[2026-10-06 22:16:28] RMSG from=deshan room=lab len=10
+[2026-10-06 22:21:19] FILE from=deshan to=kasun name=note.txt size=19
+[2026-10-06 22:22:43] FILE from=deshan to=kasun name=photo.bin size=300000
+[2026-10-06 22:27:55] JOIN user=nimal room=lab
+[2026-10-06 22:27:58] JOIN user=sahan room=lab
+[2026-10-06 22:28:12] FILE from=deshan to=lab name=note.txt size=19
+[2026-10-06 22:38:32] DISCONNECT user=kasun ip=127.0.0.1
+[2026-10-06 22:38:38] DISCONNECT user=nimal ip=127.0.0.1
+[2026-10-06 22:38:46] DISCONNECT user=sahan ip=127.0.0.1
+[2026-10-06 22:40:45] DISCONNECT user=amal ip=127.0.0.1
+[2026-10-06 22:43:25] DISCONNECT user=deshan ip=127.0.0.1
+[2026-10-07 10:33:01] SERVER_START port=8630 nid=8626
+[2026-10-07 10:34:53] CONNECT ip=127.0.0.1
+[2026-10-07 10:35:14] REGISTER user=deshan ip=127.0.0.1
+[2026-10-07 10:36:16] CONNECT ip=127.0.0.1
+[2026-10-07 10:36:25] CONNECT ip=127.0.0.1
+[2026-10-07 10:36:48] REGISTER user=KAVINDI ip=127.0.0.1
+[2026-10-07 10:37:29] REGISTER user=KASUN ip=127.0.0.1
+[2026-10-07 11:31:21] DISCONNECT user=deshan ip=127.0.0.1
+[2026-10-07 11:31:37] DISCONNECT user=KAVINDI ip=127.0.0.1
+[2026-10-07 11:31:41] DISCONNECT user=KASUN ip=127.0.0.1
